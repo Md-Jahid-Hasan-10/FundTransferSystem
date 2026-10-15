@@ -8,7 +8,13 @@ import bank.model.Customer;
 import bank.model.Transaction;
 import bank.model.TransactionRequest;
 
-import java.util.*;
+import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 /** Stores bank data in memory and generates IDs. It does not run the transaction workflow. */
 public class Bank {
@@ -17,6 +23,7 @@ public class Bank {
     private final Map<String, TransactionRequest> requests = new LinkedHashMap<>();
     private final List<Transaction> transactions = new ArrayList<>();
     private final Account bankFeeAccount;
+    private final BigDecimal customerMinimumBalance;
 
     private int customerCounter = 1000;
     private int accountCounter = 1000;
@@ -24,6 +31,11 @@ public class Bank {
     private int transactionCounter = 1000;
 
     public Bank() {
+        this(new BigDecimal("0.00"));
+    }
+
+    public Bank(BigDecimal customerMinimumBalance) {
+        this.customerMinimumBalance = customerMinimumBalance;
         bankFeeAccount = new Account("BANK-FEE-001", null, AccountRole.BANK_FEE_COLLECTION);
         accounts.put(bankFeeAccount.getAccountNumber(), bankFeeAccount);
     }
@@ -34,6 +46,10 @@ public class Bank {
         Customer customer = new Customer(id, name, email, phone, pin);
         customers.put(id, customer);
         return customer;
+    }
+
+    public Collection<Customer> getAllCustomers() {
+        return Collections.unmodifiableCollection(customers.values());
     }
 
     public Customer findCustomer(String customerId) {
@@ -55,7 +71,7 @@ public class Bank {
     // ----- accounts -----
     public Account openAccount(Customer owner) {
         String number = "ACC" + (++accountCounter);
-        Account account = new Account(number, owner, AccountRole.CUSTOMER);
+        Account account = new Account(number, owner, AccountRole.CUSTOMER, customerMinimumBalance);
         accounts.put(number, account);
         return account;
     }
@@ -76,6 +92,10 @@ public class Bank {
             }
         }
         return result;
+    }
+
+    public Collection<Account> getAllAccounts() {
+        return Collections.unmodifiableCollection(accounts.values());
     }
 
     public Account getBankFeeAccount() {
@@ -120,8 +140,5 @@ public class Bank {
 
     public List<Transaction> getAllTransactions() {
         return Collections.unmodifiableList(transactions);
-    }
-
-    public Collection<Customer> getAllCustomers() {
     }
 }
