@@ -11,6 +11,8 @@ public class NotificationFactory {
                 return new ConsoleNotification();
             case "FILE":
                 return new FileNotification();
+            case "EMAIL" :
+                return new EmailNotification();
             default:
                 throw new IllegalArgumentException("Unknown notification channel: " + type);
         }
