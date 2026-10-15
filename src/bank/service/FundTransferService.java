@@ -1,6 +1,7 @@
 package bank.service;
 
 import bank.core.Bank;
+import bank.exception.AccountFrozenException;
 import bank.exception.BankException;
 import bank.exception.InsufficientFundsException;
 import bank.exception.InvalidAmountException;
@@ -15,12 +16,14 @@ import bank.model.Transaction;
 import bank.model.TransactionRequest;
 import bank.model.TransactionStatus;
 import bank.model.TransactionType;
+import bank.policy.TransactionLimitPolicy;
 import bank.policy.TransferFeePolicy;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -33,8 +36,9 @@ public class FundTransferService {
     private static final BigDecimal ZERO = new BigDecimal("0.00");
 
     private final Bank bank;
-    private final TransferFeePolicy feePolicy;           // transfers to other customers
+    private final TransferFeePolicy feePolicy;             // transfers to other customers
     private final TransferFeePolicy ownAccountFeePolicy;   // transfers between the same customer's accounts
+    private final TransactionLimitPolicy limitPolicy;
     private final OtpService otpService;
     private final NotificationService notificationService;
     private final Clock clock;
@@ -42,11 +46,13 @@ public class FundTransferService {
     private final long requestExpirySeconds;
 
     public FundTransferService(Bank bank, TransferFeePolicy feePolicy, TransferFeePolicy ownAccountFeePolicy,
-                               OtpService otpService, NotificationService notificationService, Clock clock,
+                               TransactionLimitPolicy limitPolicy, OtpService otpService,
+                               NotificationService notificationService, Clock clock,
                                long otpExpirySeconds, long requestExpirySeconds) {
         this.bank = bank;
         this.feePolicy = feePolicy;
         this.ownAccountFeePolicy = ownAccountFeePolicy;
+        this.limitPolicy = limitPolicy;
         this.otpService = otpService;
         this.notificationService = notificationService;
         this.clock = clock;
@@ -58,6 +64,7 @@ public class FundTransferService {
     public Transaction deposit(Customer customer, String accountNumber, BigDecimal amount) {
         BigDecimal value = normalizeAmount(amount);
         Account account = findOwnedAccount(customer, accountNumber);
+        requireActive(account);
         account.deposit(value);
         Transaction tx = new Transaction(bank.nextTransactionId(), TransactionType.DEPOSIT,
                 null, account, value, ZERO, Instant.now(clock), TransactionStatus.SUCCESS);
@@ -70,9 +77,9 @@ public class FundTransferService {
     public TransactionRequest requestWithdrawal(Customer customer, String accountNumber, BigDecimal amount) {
         BigDecimal value = normalizeAmount(amount);
         Account source = findOwnedAccount(customer, accountNumber);
-        if (!source.hasSufficientFunds(value)) {
-            throw new InsufficientFundsException("Insufficient funds in account " + accountNumber + ".");
-        }
+        requireActive(source);
+        checkLimits(customer, TransactionType.WITHDRAWAL, source, null, value);
+        requireCanSpend(source, value);
         return startRequest(customer, TransactionType.WITHDRAWAL, source, null, value, ZERO);
     }
 
@@ -87,12 +94,12 @@ public class FundTransferService {
         if (source == destination) {
             throw new InvalidTransferException("Sender and receiver accounts must be different.");
         }
+        requireActive(source);
+        requireActive(destination);
+        checkLimits(customer, TransactionType.TRANSFER, source, destination, value);
         TransferFeePolicy policy = source.hasSameOwnerAs(destination) ? ownAccountFeePolicy : feePolicy;
         BigDecimal fee = policy.calculateFee(value);
-        if (!source.hasSufficientFunds(value.add(fee))) {
-            throw new InsufficientFundsException("Insufficient funds. You need the amount plus the fee ("
-                    + value.add(fee).toPlainString() + ").");
-        }
+        requireCanSpend(source, value.add(fee));
         return startRequest(customer, TransactionType.TRANSFER, source, destination, value, fee);
     }
 
@@ -155,11 +162,38 @@ public class FundTransferService {
     public List<Transaction> getFeeTransactions() {
         List<Transaction> result = new ArrayList<>();
         for (Transaction tx : bank.getAllTransactions()) {
-            if (tx.getType() == TransactionType.TRANSFER && tx.getStatus() == TransactionStatus.SUCCESS && tx.getFee().signum() > 0) {
+            if (tx.getType() == TransactionType.TRANSFER && tx.getStatus() == TransactionStatus.SUCCESS
+                    && tx.getFee().signum() > 0) {
                 result.add(tx);
             }
         }
         return result;
+    }
+
+    /**
+     * Total this customer has already sent out today (successful withdrawals and transfers to
+     * other customers). Transfers between the customer's own accounts do not count.
+     */
+    public BigDecimal getTodaysOutgoingTotal(Customer customer) {
+        LocalDate today = LocalDate.now(clock);
+        BigDecimal total = ZERO;
+        for (Transaction tx : bank.getAllTransactions()) {
+            if (tx.getStatus() != TransactionStatus.SUCCESS
+                    || tx.getSource() == null
+                    || !tx.getSource().isOwnedBy(customer)) {
+                continue;
+            }
+            if (!LocalDate.ofInstant(tx.getTimestamp(), clock.getZone()).equals(today)) {
+                continue;
+            }
+            boolean countsTowardLimit = tx.getType() == TransactionType.WITHDRAWAL
+                    || (tx.getType() == TransactionType.TRANSFER
+                    && !tx.getSource().hasSameOwnerAs(tx.getDestination()));
+            if (countsTowardLimit) {
+                total = total.add(tx.getAmount());
+            }
+        }
+        return total;
     }
 
     // ---------- private helpers ----------
@@ -177,18 +211,51 @@ public class FundTransferService {
     /** All checks happen before the first balance change, so a failure cannot leave a partial update. */
     private Transaction execute(TransactionRequest request) {
         Account source = request.getSource();
-        BigDecimal total = request.getTotalDeduction();
-        if (!source.hasSufficientFunds(total)) {
-            throw new InsufficientFundsException("Insufficient funds for this transaction.");
+        Account destination = request.getDestination();
+        requireActive(source);
+        if (destination != null) {
+            requireActive(destination);
         }
+        checkLimits(request.getCustomer(), request.getType(), source, destination, request.getAmount());
+        BigDecimal total = request.getTotalDeduction();
+        requireCanSpend(source, total);
+
         source.withdraw(total);
         if (request.getType() == TransactionType.TRANSFER) {
-            request.getDestination().deposit(request.getAmount());
+            destination.deposit(request.getAmount());
             if (request.getFee().signum() > 0) {
                 bank.getBankFeeAccount().deposit(request.getFee());
             }
         }
         return buildRecord(request, TransactionStatus.SUCCESS);
+    }
+
+    private void checkLimits(Customer customer, TransactionType type, Account source,
+                             Account destination, BigDecimal amount) {
+        if (type == TransactionType.TRANSFER && source.hasSameOwnerAs(destination)) {
+            return; // money stays with the same customer, so limits do not apply
+        }
+        limitPolicy.check(amount, getTodaysOutgoingTotal(customer));
+    }
+
+    private void requireActive(Account account) {
+        if (account.isFrozen()) {
+            throw new AccountFrozenException("Account " + account.getAccountNumber()
+                    + " is frozen and cannot be used for transactions.");
+        }
+    }
+
+    private void requireCanSpend(Account account, BigDecimal total) {
+        if (!account.hasSufficientFunds(total)) {
+            String message = "Insufficient funds. This needs " + total.toPlainString()
+                    + " (including any fee), but you can spend at most "
+                    + account.getAvailableToSpend().toPlainString();
+            if (account.getMinimumBalance().signum() > 0) {
+                message += ", because a minimum balance of " + account.getMinimumBalance().toPlainString()
+                        + " must remain";
+            }
+            throw new InsufficientFundsException(message + ".");
+        }
     }
 
     private Transaction buildRecord(TransactionRequest request, TransactionStatus status) {
