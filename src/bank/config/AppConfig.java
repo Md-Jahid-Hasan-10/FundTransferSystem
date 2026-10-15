@@ -14,6 +14,11 @@ public final class AppConfig {
     private final int maxOtpAttempts = 3;
     private final String currencySymbol = "৳";
     private final String notificationChannel = "CONSOLE"; // CONSOLE or FILE
+    private final BigDecimal minimumBalance = new BigDecimal("100.00");       // every customer account must keep this
+    private final BigDecimal perTransactionLimit = new BigDecimal("2000.00"); // max per withdrawal/transfer
+    private final BigDecimal dailyLimit = new BigDecimal("3000.00");          // max total per customer per day
+    private final String adminUsername = "admin";
+    private final String adminPassword = "admin123";                          // demo only: never do this in real apps
 
     private AppConfig() {
     }
@@ -33,4 +38,9 @@ public final class AppConfig {
     public int getMaxOtpAttempts() { return maxOtpAttempts; }
     public String getCurrencySymbol() { return currencySymbol; }
     public String getNotificationChannel() { return notificationChannel; }
+    public BigDecimal getMinimumBalance() { return minimumBalance; }
+    public BigDecimal getPerTransactionLimit() { return perTransactionLimit; }
+    public BigDecimal getDailyLimit() { return dailyLimit; }
+    public String getAdminUsername() { return adminUsername; }
+    public String getAdminPassword() { return adminPassword; }
 }
