@@ -8,11 +8,7 @@ import bank.model.Customer;
 import bank.model.Transaction;
 import bank.model.TransactionRequest;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 /** Stores bank data in memory and generates IDs. It does not run the transaction workflow. */
 public class Bank {
@@ -124,5 +120,8 @@ public class Bank {
 
     public List<Transaction> getAllTransactions() {
         return Collections.unmodifiableList(transactions);
+    }
+
+    public Collection<Customer> getAllCustomers() {
     }
 }
