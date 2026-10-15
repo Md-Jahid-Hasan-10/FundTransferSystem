@@ -1,8 +1,8 @@
 ### IntelliJ IDEA ###
+.idea/
 out/
-!**/src/main/**/out/
-!**/src/test/**/out/
-.kotlin
+*.iml
+notifications.log
 
 ### Eclipse ###
 .apt_generated
