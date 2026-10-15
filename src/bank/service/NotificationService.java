@@ -1,6 +1,7 @@
 package bank.service;
 
 import bank.config.AppConfig;
+import bank.model.Account;
 import bank.model.Customer;
 import bank.model.Transaction;
 import bank.model.TransactionRequest;
@@ -51,6 +52,13 @@ public class NotificationService {
     public void notifyCancelled(TransactionRequest request) {
         send(request.getCustomer(), "Your " + request.getType() + " request " + request.getRequestId()
                 + " was cancelled. No money was moved.");
+    }
+
+    public void notifyAccountStatusChanged(Account account, boolean frozen) {
+        String text = frozen
+                ? "frozen. You cannot use it until the bank unfreezes it."
+                : "unfrozen. You can use it again.";
+        send(account.getOwner(), "Your account " + account.getAccountNumber() + " has been " + text);
     }
 
     private String money(Transaction tx) {
