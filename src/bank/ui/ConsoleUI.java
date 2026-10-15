@@ -11,6 +11,7 @@ import bank.model.Customer;
 import bank.model.Transaction;
 import bank.model.TransactionRequest;
 import bank.model.TransactionType;
+import bank.service.AdminService;
 import bank.service.FundTransferService;
 
 import java.math.BigDecimal;
@@ -25,12 +26,14 @@ public class ConsoleUI {
 
     private final Bank bank;
     private final FundTransferService service;
+    private final AdminService adminService;
     private final AppConfig config;
     private final Scanner scanner = new Scanner(System.in);
 
-    public ConsoleUI(Bank bank, FundTransferService service, AppConfig config) {
+    public ConsoleUI(Bank bank, FundTransferService service, AdminService adminService, AppConfig config) {
         this.bank = bank;
         this.service = service;
+        this.adminService = adminService;
         this.config = config;
     }
 
@@ -41,6 +44,7 @@ public class ConsoleUI {
             System.out.println("\n1. Login");
             System.out.println("2. Register");
             System.out.println("3. Bank fee report");
+            System.out.println("4. Admin login");
             System.out.println("0. Exit");
             String choice = prompt("Choose: ");
             try {
@@ -48,6 +52,7 @@ public class ConsoleUI {
                     case "1" -> login();
                     case "2" -> register();
                     case "3" -> showFeeReport();
+                    case "4" -> adminLogin();
                     case "0" -> running = false;
                     default -> System.out.println("Invalid choice.");
                 }
@@ -90,6 +95,67 @@ public class ConsoleUI {
         }
     }
 
+    // ---------- admin menu ----------
+    private void adminLogin() {
+        String username = prompt("Admin username: ");
+        String password = prompt("Admin password: ");
+        adminService.login(username, password);
+        System.out.println("Admin access granted.");
+        adminMenu();
+    }
+
+    private void adminMenu() {
+        boolean loggedIn = true;
+        while (loggedIn) {
+            System.out.println("\n--- Admin ---");
+            System.out.println("1. View all customers");
+            System.out.println("2. View all accounts");
+            System.out.println("3. Freeze an account");
+            System.out.println("4. Unfreeze an account");
+            System.out.println("5. View all transactions");
+            System.out.println("0. Logout");
+            String choice = prompt("Choose: ");
+            try {
+                switch (choice) {
+                    case "1" -> showAllCustomers();
+                    case "2" -> showAllAccounts();
+                    case "3" -> {
+                        adminService.freezeAccount(prompt("Account number to freeze: "));
+                        System.out.println("Account frozen.");
+                    }
+                    case "4" -> {
+                        adminService.unfreezeAccount(prompt("Account number to unfreeze: "));
+                        System.out.println("Account unfrozen.");
+                    }
+                    case "5" -> printTransactionTable(adminService.getAllTransactions());
+                    case "0" -> loggedIn = false;
+                    default -> System.out.println("Invalid choice.");
+                }
+            } catch (BankException e) {
+                System.out.println("Error: " + e.getMessage());
+            }
+        }
+    }
+
+    private void showAllCustomers() {
+        System.out.printf("%n%-10s %-14s %-26s %s%n", "ID", "Name", "Email", "Phone");
+        for (Customer c : adminService.getAllCustomers()) {
+            System.out.printf("%-10s %-14s %-26s %s%n", c.getCustomerId(), c.getName(), c.getEmail(), c.getPhone());
+        }
+    }
+
+    private void showAllAccounts() {
+        System.out.printf("%n%-13s %-14s %-20s %-8s %12s%n", "Account", "Owner", "Role", "Status", "Balance");
+        for (Account a : adminService.getAllAccounts()) {
+            System.out.printf("%-13s %-14s %-20s %-8s %12s%n",
+                    a.getAccountNumber(),
+                    a.getOwner() == null ? "BANK" : a.getOwner().getName(),
+                    a.getRole(),
+                    a.getStatus(),
+                    config.formatMoney(a.getBalance()));
+        }
+    }
+
     // ---------- customer menu ----------
     private void customerMenu(Customer customer) {
         boolean loggedIn = true;
@@ -101,6 +167,7 @@ public class ConsoleUI {
             System.out.println("4. Withdraw");
             System.out.println("5. Transfer");
             System.out.println("6. Transaction history");
+            System.out.println("7. View my limits");
             System.out.println("0. Logout");
             String choice = prompt("Choose: ");
             try {
@@ -111,6 +178,7 @@ public class ConsoleUI {
                     case "4" -> withdraw(customer);
                     case "5" -> transfer(customer);
                     case "6" -> showHistory(customer);
+                    case "7" -> showLimits(customer);
                     case "0" -> loggedIn = false;
                     default -> System.out.println("Invalid choice.");
                 }
@@ -124,8 +192,22 @@ public class ConsoleUI {
         System.out.println("\nYour accounts:");
         for (Account account : bank.getAccountsOf(customer)) {
             System.out.println("  " + account.getAccountNumber() + "  balance "
-                    + config.formatMoney(account.getBalance()));
+                    + config.formatMoney(account.getBalance())
+                    + (account.isFrozen() ? "  [FROZEN]" : ""));
         }
+    }
+
+    private void showLimits(Customer customer) {
+        BigDecimal used = service.getTodaysOutgoingTotal(customer);
+        BigDecimal remaining = config.getDailyLimit().subtract(used).max(BigDecimal.ZERO);
+        System.out.println("\n--- Your limits ---");
+        System.out.println("Per-transaction limit : " + config.formatMoney(config.getPerTransactionLimit()));
+        System.out.println("Daily limit           : " + config.formatMoney(config.getDailyLimit()));
+        System.out.println("Used today            : " + config.formatMoney(used));
+        System.out.println("Remaining today       : " + config.formatMoney(remaining));
+        System.out.println("Minimum balance       : " + config.formatMoney(config.getMinimumBalance())
+                + " (each account must keep this)");
+        System.out.println("Transfers between your own accounts do not count toward these limits.");
     }
 
     private void openAccount(Customer customer) {
@@ -161,14 +243,17 @@ public class ConsoleUI {
     private void showHistory(Customer customer) {
         showAccounts(customer);
         String accountNumber = prompt("Account number: ");
-        List<Transaction> history = service.getHistory(customer, accountNumber);
-        if (history.isEmpty()) {
+        printTransactionTable(service.getHistory(customer, accountNumber));
+    }
+
+    private void printTransactionTable(List<Transaction> transactions) {
+        if (transactions.isEmpty()) {
             System.out.println("No transactions yet.");
             return;
         }
         System.out.printf("%n%-8s %-19s %-11s %-10s %-10s %12s %8s  %s%n",
                 "ID", "Time", "Type", "From", "To", "Amount", "Fee", "Status");
-        for (Transaction tx : history) {
+        for (Transaction tx : transactions) {
             System.out.printf("%-8s %-19s %-11s %-10s %-10s %12s %8s  %s%n",
                     tx.getTransactionId(),
                     TIME_FORMAT.format(tx.getTimestamp()),
@@ -232,11 +317,11 @@ public class ConsoleUI {
                     + " (" + request.getDestination().getOwner().getName() + ")");
         }
         System.out.println("Amount        : " + config.formatMoney(request.getAmount()));
-        System.out.println("Fee           : " + config.formatMoney(request.getFee()));
         if (request.getType() == TransactionType.TRANSFER
                 && request.getSource().hasSameOwnerAs(request.getDestination())) {
             System.out.println("Note          : transfer between your own accounts");
         }
+        System.out.println("Fee           : " + config.formatMoney(request.getFee()));
         System.out.println("Total deducted: " + config.formatMoney(request.getTotalDeduction()));
     }
 
